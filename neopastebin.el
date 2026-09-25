@@ -766,6 +766,11 @@ See `fetch-list-xml' for more information"
 
 ;; User interface
 
+(defun pastebin--default-user-or-error ()
+  "Return `pastebin--default-user', erroring when login is not configured"
+  (or pastebin--default-user
+      (user-error "No pastebin user configured, call `M-x pastebin-create-login' first")))
+
 (defun pastebin-show-url ()
   "On a buffer from a fetched paste, show the url o echo area"
   (interactive)
@@ -777,11 +782,12 @@ See `fetch-list-xml' for more information"
   "Refresh the list buffer screen
 Operates on current buffer"
   (interactive)
-  (unless (is-logged pastebin--default-user)
-    (login pastebin--default-user))
-  (refresh-paste-list pastebin--default-user)
-  (switch-to-buffer (do-list-buffer pastebin--default-user))
-  (message "%d pastes fetched!" (length (oref pastebin--default-user paste-list)))
+  (let ((user (pastebin--default-user-or-error)))
+    (unless (is-logged user)
+      (login user))
+    (refresh-paste-list user)
+    (switch-to-buffer (do-list-buffer user))
+    (message "%d pastes fetched!" (length (oref user paste-list))))
   )
 
 
