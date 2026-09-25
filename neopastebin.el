@@ -414,7 +414,7 @@ Some keybinds are setted"
 
       (setq pastebin--list-buffer-user user)
 
-      (widget-insert (format "%5.5s | %-8.8s | %-32.32s | %-7.7s | %-30.30s\n"
+      (widget-insert (format "%-4.4s | %-8.8s | %-32.32s | %-7.7s | %-24.24s\n"
                              "VIEW" "ID" "TITLE" "FORMAT" "DATE"))
       (dolist (paste (oref user paste-list))
         (widget-create 'link
@@ -422,7 +422,7 @@ Some keybinds are setted"
                                  (pastebin--fetch-paste-at-point))
                        :paste paste
                        :follow-link t
-                       :value (format "%4.4s | %-8.8s | %-32.32s | %-7.7s | %-20.20s"
+                       :value (format "%-4.4s | %-8.8s | %-32.32s | %-7.7s | %-24.24s"
                                       (cond
                                        ((string= (oref paste private) "0")
                                         "PUBL")
