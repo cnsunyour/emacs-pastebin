@@ -244,8 +244,10 @@
     map)
   "Key map for pastebin list buffer")
 
-(defconst pastebin--raw-paste-url "http://pastebin.com/raw.php?i="
-  "Concatenate this with paste key to get the raw paste")
+(defconst pastebin--raw-paste-url "https://pastebin.com/raw/"
+  "Concatenate this with paste key to get the raw paste.
+Note: this only serves public and unlisted pastes; private ones need
+the authenticated API, see `paste-fetch'.")
 
 ;;
 ;; EIEIO Layer
