@@ -271,7 +271,9 @@ the authenticated API, see `paste-fetch'.")
   (slot-boundp user 'usr-key))
 
 (cl-defmethod fetch-list-xml ((user pastebin--paste-user))
-  "Fetch the list of pastes as xml, and return that buffer"
+  "Fetch the list of pastes as xml, and return that buffer.
+Returns nil when the user has no pastes yet - the API answers
+\"No pastes found.\" which is a normal state, not an error"
   (let* ((params (concat "api_dev_key=" (oref user dev-key)
                          "&api_user_key=" (oref user usr-key)
                          "&api_results_limit=" (format "%d" pastebin-default-paste-list-limit)
@@ -281,31 +283,38 @@ the authenticated API, see `paste-fetch'.")
                                                                params)
       (pastebin--strip-CRs)
       (goto-char (point-min))
-      (current-buffer)
+      (if (looking-at-p "No pastes found.")
+          (progn
+            (kill-buffer (current-buffer))
+            nil)
+        (current-buffer))
       )))
 
 (cl-defmethod refresh-paste-list ((user pastebin--paste-user))
   "Set/Refresh paste-list attr to the list of paste objects retrieved from pastebin.com"
-  (oset user paste-list nil)
-  (with-current-buffer (fetch-list-xml user)
-    (goto-char (point-min))
-    (let ((i (point-min))
-          plist)
-      (while (re-search-forward "</paste>" nil t)
-        (let ((paste-sexp (xml-parse-region i (point)))
-              p)
-          (setq i (point))
-          (condition-case err
-              (progn
-                (setq p (pastebin--sexp-to-paste paste-sexp))
-                (oset p user user)
-                (oset p last-fetched (float-time))
-                (setq plist (append plist (list p))))
-            (wrong-type-argument
-             (error "Error while creating paste object on `refresh-paste-list' %s" err)
-             (debug)))
+  (let ((list-buf (fetch-list-xml user)))
+    (when list-buf
+      (with-current-buffer list-buf
+        (goto-char (point-min))
+        (let ((i (point-min))
+              plist)
+          (while (re-search-forward "</paste>" nil t)
+            (let ((paste-sexp (xml-parse-region i (point)))
+                  p)
+              (setq i (point))
+              (condition-case err
+                  (progn
+                    (setq p (pastebin--sexp-to-paste paste-sexp))
+                    (oset p user user)
+                    (oset p last-fetched (float-time))
+                    (setq plist (append plist (list p))))
+                (wrong-type-argument
+                 (error "Error while creating paste object on `refresh-paste-list' %s" err)
+                 (debug)))
+              )
+            (oset user paste-list plist)
+            )
           )
-        (oset user paste-list plist)
         )
       )
     )
@@ -627,19 +636,19 @@ See `fetch-list-xml' for more information"
          (url-request-extra-headers
           '(("Content-Type" . "application/x-www-form-urlencoded")))
          (url-request-data params)
-         (content-buf (url-retrieve-synchronously url)))
-    (unless (pastebin--http-200-p content-buf) ;; check HTTP header
-      (when debug-on-error
-        (with-current-buffer (get-buffer-create "*pastebin-debug*")
-          (erase-buffer)
-          (goto-char (point-min))
-          (insert "Bad HTTP response below\n")
-          (insert-buffer-substring content-buf)))
-      (error (concat
-              "pastebin--url-retrieve-synchronously HTTP Bad response (not 200) on header\n"
-              (if debug-on-error
-                  "See header at *pastebin-debug*"
-                "")))) ;; header is OK ...
+         (content-buf (url-retrieve-synchronously url))
+         (status (pastebin--http-status content-buf)))
+    (unless (and status (>= status 200) (< status 300))
+      ;; Pastebin reports API errors on non-2xx responses, the reason
+      ;; is in the body: surface it instead of a generic message
+      (let ((body (with-current-buffer content-buf
+                    (goto-char (point-min))
+                    (if (re-search-forward "\n\n" nil t)
+                        (buffer-substring-no-properties (point) (point-max))
+                      ""))))
+        (kill-buffer content-buf)
+        (error "pastebin--url-retrieve-synchronously HTTP %s: %.300s"
+               (or status "malformed") body))) ;; header is OK ...
     (with-current-buffer content-buf
       (goto-char (point-min))
       (pastebin--strip-http-header)
@@ -659,22 +668,21 @@ See `fetch-list-xml' for more information"
          (save-excursion
            (re-search-forward "Bad API request," nil t))
          (save-excursion
-           (re-search-forward "No pastes found." nil t))
-         (save-excursion
            (re-search-forward "URL Post limit, maximum pastes per 24h reached" nil t)))
         (error "Pastebin bad response: %s" (buffer-string))
       nil)))
 
 
-(defun pastebin--http-200-p (header-buf)
-  "Search for HTTP 200 status on header-str - a buffer"
+(defun pastebin--http-status (header-buf)
+  "Return the HTTP status code of the response in HEADER-BUF, or nil"
   (unless (bufferp header-buf)
-    (error "pastebin--http-200-p: `header-buf' need be a buffer :/"))
+    (error "pastebin--http-status: `header-buf' need be a buffer :/"))
 
   (with-current-buffer header-buf
     (save-excursion
       (goto-char (point-min))
-      (re-search-forward "HTTP.*200 OK" nil t))))
+      (and (re-search-forward "HTTP/[0-9.]+ +\\([0-9][0-9][0-9]\\)" nil t)
+           (string-to-number (match-string 1))))))
 
 (defun pastebin--get-pst-url (buf)
   "Return url string from buf"
