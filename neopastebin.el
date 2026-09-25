@@ -369,9 +369,8 @@ entries are skipped instead of aborting the whole refresh"
             )
           ;; atomic swap: publish the list only after a full parse
           (oset user paste-list plist)
-          )
-        )
-      )
+          ))
+      (kill-buffer list-buf))
     )
   )
 
@@ -454,16 +453,18 @@ Some keybinds are setted"
       (oref user usr-key)
     (let* ((params (concat "api_dev_key=" (oref user dev-key)
                            "&api_user_name=" (url-hexify-string (oref user username))
-                           "&api_user_password=" (url-hexify-string (oref user password)))))
-
-      (with-current-buffer (pastebin--url-retrieve-synchronously pastebin-post-request-login-url
-                                                                 "POST"
-                                                                 params)
+                           "&api_user_password=" (url-hexify-string (oref user password))))
+           (resp-buf (pastebin--url-retrieve-synchronously pastebin-post-request-login-url
+                                                           "POST"
+                                                           params)))
+      (with-current-buffer resp-buf
         ;; trim: a trailing newline in the response would corrupt every
         ;; later request that carries api_user_key
         (oset user usr-key
               (string-trim (buffer-substring-no-properties
-                            (point-min) (point-max))))))))
+                            (point-min) (point-max)))))
+      (kill-buffer resp-buf)
+      (oref user usr-key))))
 
 (defun pastebin--paste-create (buffer-data &optional unlisted)
   "Create a paste from BUFFER-DATA and kill its url.
@@ -574,6 +575,7 @@ the API `api_option=show_paste' with the user key is required."
     (with-current-buffer pbuf
       (erase-buffer)
       (insert-buffer-substring content-buf)
+      (kill-buffer content-buf)
       (pastebin--strip-paste-CRs)
       (funcall (get-mode p))
       (setq pastebin--local-buffer-paste p) ;; buffer local
@@ -591,12 +593,13 @@ the API `api_option=show_paste' with the user key is required."
   (let* ((params (concat "api_dev_key=" (oref (oref p user) dev-key)
                          "&api_user_key=" (oref (oref p user) usr-key)
                          "&api_paste_key=" (oref p key)
-                         "&api_option=delete")))
-    (with-current-buffer (pastebin--url-retrieve-synchronously pastebin-post-request-paste-url
-                                                               "POST"
-                                                               params)
-      (buffer-string)) ;; Pastebin send somthing like paste xxx deleted
-    ))
+                         "&api_option=delete"))
+         (resp-buf (pastebin--url-retrieve-synchronously pastebin-post-request-paste-url
+                                                         "POST"
+                                                         params)))
+    (with-current-buffer resp-buf
+      (prog1 (buffer-string) ;; Pastebin send somthing like paste xxx deleted
+        (kill-buffer resp-buf)))))
 
 ;; Local functions and helpers
 
