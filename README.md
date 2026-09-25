@@ -86,4 +86,4 @@ M-x `pastebin-new` -> will create a new paste from current buffer
 
 The name of the paste is given from current buffer name
 The format from buffers major mode
-Prefix argument makes private
+Prefix argument makes the paste unlisted (C-u); without it the paste is public
