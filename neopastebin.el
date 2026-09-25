@@ -142,7 +142,7 @@
   :keymap pastebin--mode-map)
 
 (defvar pastebin--type-assoc
-  '((actionscript-mode . " actionscript")
+  '((actionscript-mode . "actionscript")
     (ada-mode . "ada")
     (asm-mode . "asm")
     (sh-mode . "bash")
@@ -220,6 +220,61 @@
     (yaml-mode . "properties")
     (text-mode . "text"))
   "Alist composed of major-mode names and corresponding pastebin highlight formats.")
+
+(defvar pastebin--format-mode-alist
+  '((ada . ada-mode)
+    (asm . asm-mode)
+    (actionscript . actionscript-mode)
+    (bash . sh-mode)
+    (bibtex . bibtex-mode)
+    (c . c-mode)
+    (cmake . cmake-mode)
+    (cobol . cobol-mode)
+    (cpp . c++-mode)
+    (csharp . csharp-mode)
+    (css . css-mode)
+    (delphi . delphi-mode)
+    (diff . diff-mode)
+    (dot . graphviz-dot-mode)
+    (eiffel . eiffel-mode)
+    (erlang . erlang-mode)
+    (fortran . fortran-mode)
+    (gettext . po-mode)
+    (glsl . glsl-mode)
+    (gnuplot . gnuplot-mode)
+    (haskell . haskell-mode)
+    (html4strict . html-mode)
+    (idl . idl-mode)
+    (ini . conf-mode)
+    (java . java-mode)
+    (javascript . js-mode)
+    (latex . latex-mode)
+    (lisp . lisp-mode)
+    (lua . lua-mode)
+    (make . makefile-mode)
+    (matlab . matlab-mode)
+    (objc . objc-mode)
+    (oberon2 . oberon-mode)
+    (ocaml . tuareg-mode)
+    (octave . octave-mode)
+    (pascal . pascal-mode)
+    (perl . perl-mode)
+    (php . php-mode)
+    (plsql . plsql-mode)
+    (prolog . prolog-mode)
+    (properties . conf-mode)
+    (python . python-mode)
+    (ruby . ruby-mode)
+    (scheme . scheme-mode)
+    (smalltalk . smalltalk-mode)
+    (sql . sql-mode)
+    (tcl . tcl-mode)
+    (vb . visual-basic-mode)
+    (xml . nxml-mode)
+    (text . text-mode))
+  "Explicit mapping from pastebin format_short names to major modes.
+Prefer built-in modes; modes that are not installed fall back to
+`text-mode' - see `get-mode'.")
 
 (defvar pastebin--default-user nil
   "The default user begin used")
@@ -467,10 +522,15 @@ The contents of paste are not stored. Instead the method
 `paste-fetch' fetch and retrieve the buffer with paste contents")
 
 (cl-defmethod get-mode ((p pastebin--paste))
-  "return the mode from `pastebin--type-assoc'"
-  (if (slot-boundp p 'format_short)
-      (car (rassoc (oref p format_short) pastebin--type-assoc))
-    (error "No format short for paste %s with key %s" (oref p title) (oref p key))))
+  "Return the major mode matching the paste format.
+Falls back to `text-mode' when the format is unknown or its mode is
+not installed - a missing mode must not make the paste unopenable"
+  (let* ((format (and (slot-boundp p 'format_short)
+                      (intern (oref p format_short))))
+         (mode (cdr (assq format pastebin--format-mode-alist))))
+    (if (and mode (fboundp mode))
+        mode
+      'text-mode)))
 
 (cl-defmethod fetch-and-process ((p pastebin--paste))
   "Fetch buffer a do needed processing before switching to it"
