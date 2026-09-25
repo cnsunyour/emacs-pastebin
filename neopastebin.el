@@ -468,11 +468,27 @@ The contents of paste are not stored. Instead the method
   (with-current-buffer (paste-fetch p)
     (switch-to-buffer (current-buffer))))
 
+(defun pastebin--fetch-private-paste-content (p)
+  "Fetch the content of private paste P via the authenticated API.
+The raw url only serves public and unlisted pastes; for private ones
+the API `api_option=show_paste' with the user key is required."
+  (let* ((user (oref p user))
+         (params (concat "api_dev_key=" (oref user dev-key)
+                         "&api_user_key=" (oref user usr-key)
+                         "&api_paste_key=" (oref p key)
+                         "&api_option=show_paste")))
+    (pastebin--url-retrieve-synchronously pastebin-post-request-paste-url
+                                          "POST"
+                                          params)))
+
 (cl-defmethod paste-fetch ((p pastebin--paste))
   "Fetch the raw content from paste and return buffer containing"
-  (let* ((content-buf (pastebin--url-retrieve-synchronously (concat pastebin--raw-paste-url (oref p key))
-                                                            "GET"
-                                                            ""))
+  (let* ((content-buf (if (equal (oref p private) "2")
+                          (pastebin--fetch-private-paste-content p)
+                        (pastebin--url-retrieve-synchronously
+                         (concat pastebin--raw-paste-url (oref p key))
+                         "GET"
+                         "")))
          (inhibit-read-only t)
          (pbuf (if (and (slot-boundp p 'buffer)
                         (buffer-live-p (oref p buffer)))
