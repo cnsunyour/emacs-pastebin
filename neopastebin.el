@@ -1,4 +1,4 @@
-;;; neopastebin.el --- pastebin.com interface to emacs
+;;; neopastebin.el --- pastebin.com interface to emacs -*- lexical-binding: t; -*-
 
 ;;; Copyright (C) 2013 by Daniel Hilst <danielhilst at gmail.com>
 
@@ -100,7 +100,9 @@
 ;;;
 ;;; Codes:
 ;;;
+(require 'cl-lib)
 (require 'eieio)
+(require 'url)
 (require 'wid-edit)
 
 (defgroup pastebin nil
@@ -262,11 +264,11 @@
   )
   "Class representing a pastebin.com user")
 
-(defmethod is-logged ((user pastebin--paste-user))
+(cl-defmethod is-logged ((user pastebin--paste-user))
   "Return true if user is logged in"
-  (slot-boundp user :usr-key))
+  (slot-boundp user 'usr-key))
 
-(defmethod fetch-list-xml ((user pastebin--paste-user))
+(cl-defmethod fetch-list-xml ((user pastebin--paste-user))
   "Fetch the list of pastes as xml, and return that buffer"
   (let* ((params (concat "api_dev_key=" (oref user dev-key)
                          "&api_user_key=" (oref user usr-key)
@@ -280,9 +282,9 @@
       (current-buffer)
       )))
 
-(defmethod refresh-paste-list ((user pastebin--paste-user))
+(cl-defmethod refresh-paste-list ((user pastebin--paste-user))
   "Set/Refresh paste-list attr to the list of paste objects retrieved from pastebin.com"
-  (oset user :paste-list nil)
+  (oset user paste-list nil)
   (with-current-buffer (fetch-list-xml user)
     (goto-char (point-min))
     (let ((i (point-min))
@@ -294,14 +296,14 @@
           (condition-case err
               (progn
                 (setq p (pastebin--sexp-to-paste paste-sexp))
-                (oset p :user user)
-                (oset p :last-fetched (float-time))
+                (oset p user user)
+                (oset p last-fetched (float-time))
                 (setq plist (append plist (list p))))
             (wrong-type-argument
              (error "Error while creating paste object on `refresh-paste-list' %s" err)
              (debug)))
           )
-        (oset user :paste-list plist)
+        (oset user paste-list plist)
         )
       )
     )
@@ -310,34 +312,32 @@
 (defmacro pastebin--sort-by-string-attr (user attr)
   "sort :paste-list by `attr' in reverse order"
   `(progn
-     (unless (keywordp ,attr)
-       (error "pastebin--sort-by-stirng-attr attr is not a keyword"))
-
      (unless (member ,attr '(:key :title :format_long :format_short :url :date :private))
-      (error "pastebin--sort-by-string-attr attr is not in '(:key :title :format_long :format_short :url)"))
+      (error "pastebin--sort-by-stirng-attr attr is not in '(:key :title :format_long :format_short :url :date :private)"))
 
-     (oset ,user :paste-list (sort (oref ,user :paste-list) (lambda (p1 p2)
-                                                          (string< (downcase (oref p1 ,attr))
-                                                                   (downcase (oref p2 ,attr))))))
+     (let ((attr-name (intern (substring (symbol-name ,attr) 1))))
+       (oset ,user paste-list (sort (oref ,user paste-list) (lambda (p1 p2)
+                                                            (string< (downcase (eieio-oref p1 attr-name))
+                                                                     (downcase (eieio-oref p2 attr-name)))))))
      )
   )
 
-(defmethod do-list-buffer ((user pastebin--paste-user))
+(cl-defmethod do-list-buffer ((user pastebin--paste-user))
   "Create a buffer with a list of pastes and return it
 Some keybinds are setted"
   (unless (is-logged user)
     (error "do-list-buffer called with unloged user"))
 
-  (unless (slot-boundp user :list-buffer)
-    (oset user :list-buffer (format "Pastebin %s pastes" (oref user :username))))
+  (unless (slot-boundp user 'list-buffer)
+    (oset user list-buffer (format "Pastebin %s pastes" (oref user username))))
 
-  (unless (get-buffer (oref user :list-buffer))
-    (generate-new-buffer (oref user :list-buffer))
-    (message "%s buffer created" (oref user :list-buffer)))
+  (unless (get-buffer (oref user list-buffer))
+    (generate-new-buffer (oref user list-buffer))
+    (message "%s buffer created" (oref user list-buffer)))
 
   (let ((inhibit-read-only t)
         old-point)
-    (with-current-buffer (get-buffer (oref user :list-buffer))
+    (with-current-buffer (get-buffer (oref user list-buffer))
 
       (setq old-point (point))
 
@@ -350,7 +350,7 @@ Some keybinds are setted"
 
       (widget-insert (format "%5.5s | %-8.8s | %-32.32s | %-7.7s | %-30.30s\n"
                              "VIEW" "ID" "TITLE" "FORMAT" "DATE"))
-      (dolist (paste (oref user :paste-list))
+      (dolist (paste (oref user paste-list))
         (widget-create 'link
                        :notify (lambda (wid &rest ignore)
                                  (pastebin--fetch-paste-at-point))
@@ -358,18 +358,18 @@ Some keybinds are setted"
                        :follow-link t
                        :value (format "%4.4s | %-8.8s | %-32.32s | %-7.7s | %-20.20s"
                                       (cond
-                                       ((string= (oref paste :private) "0")
+                                       ((string= (oref paste private) "0")
                                         "PUBL")
-                                       ((string= (oref paste :private) "1")
+                                       ((string= (oref paste private) "1")
                                         "ULST")
-                                       ((string= (oref paste :private) "2")
+                                       ((string= (oref paste private) "2")
                                         "PRIV")
                                        (t
                                         "_ERR"))
-                                      (oref paste :key)
-                                      (or (oref paste :title) "")
-                                      (oref paste :format_short)
-                                      (format-time-string "%c" (seconds-to-time (string-to-number (oref paste :date))))
+                                      (oref paste key)
+                                      (or (oref paste title) "")
+                                      (oref paste format_short)
+                                      (format-time-string "%c" (seconds-to-time (string-to-number (oref paste date))))
                                       )
                        )
 
@@ -378,49 +378,50 @@ Some keybinds are setted"
       (widget-setup)
       (goto-char (or old-point (point-min)))
       (current-buffer)
-      ) ;; (with-current-buffer (get-buffer (oref user :list-buffer))
+      ) ;; (with-current-buffer (get-buffer (oref user list-buffer))
     ) ;; (let ((inhibit-read-only t)
   )
 
-(defmethod login ((user pastebin--paste-user))
+(cl-defmethod login ((user pastebin--paste-user))
   "Given user and password login and sets usr-key"
-  (if (slot-boundp user :usr-key)
-      (oref user :usr-key)
-    (let* ((params (concat "api_dev_key=" (oref user :dev-key)
-                           "&api_user_name=" (url-hexify-string (oref user :username))
-                           "&api_user_password=" (url-hexify-string (oref user :password)))))
+  (if (slot-boundp user 'usr-key)
+      (oref user usr-key)
+    (let* ((params (concat "api_dev_key=" (oref user dev-key)
+                           "&api_user_name=" (url-hexify-string (oref user username))
+                           "&api_user_password=" (url-hexify-string (oref user password)))))
 
       (with-current-buffer (pastebin--url-retrieve-synchronously pastebin-post-request-login-url
                                                                  "POST"
                                                                  params)
-        (oset user :usr-key (buffer-substring-no-properties (point-min) (point-max)))))))
+        (oset user usr-key (buffer-substring-no-properties (point-min) (point-max)))))))
 
-(defmethod paste-create (buffer-data &optional unlisted)
-  "Create new paste to pastebin.com helper"
-  (unless (is-logged pastebin--default-user)
-    (login pastebin--default-user))
-  (save-excursion
-    (goto-char (point-min))
-    (pastebin-mode 1)
-    (let* ((lexical-binding t)
-           (pbuf (paste-new pastebin--default-user buffer-data unlisted))
-           (url (pastebin--get-pst-url pbuf))
-           (x-select-enable-clipboard t)
-           (link-point (re-search-forward "http://[A-Za-z0-9_-]+\.[A-Za-z0-9]+" nil t)))
-      (kill-new url)
-      (message "URL: %s%s" url
-               (if link-point
-                   (concat (format "\nYour buffer contains an link at line %d\n" (line-number-at-pos link-point))
-		           (format "please visit link above and fill the captcha"))
-                 "")))))
+(defun pastebin--paste-create (buffer-data &optional unlisted)
+  "Create a paste from BUFFER-DATA and kill its url.
+Shared by `pastebin-new' and `pastebin-new-from-selection'"
+  (let ((user (pastebin--default-user-or-error)))
+    (unless (is-logged user)
+      (login user))
+    (save-excursion
+      (goto-char (point-min))
+      (pastebin-mode 1)
+      (let* ((pbuf (paste-new user buffer-data unlisted))
+             (url (pastebin--get-pst-url pbuf))
+             (link-point (re-search-forward "https\\?://[A-Za-z0-9_-]+\\.[A-Za-z0-9]+" nil t)))
+        (kill-buffer pbuf)
+        (kill-new url)
+        (message "URL: %s%s" url
+                 (if link-point
+                     (concat (format "\nYour buffer contains a URL at line %d\n" (line-number-at-pos link-point))
+                             (format "pastebin may ask you to fill a captcha when you open it"))
+                   ""))))))
 
-(defmethod paste-new ((user pastebin--paste-user) buffer-data &optional unlisted)
+(cl-defmethod paste-new ((user pastebin--paste-user) buffer-data &optional unlisted)
   "Upload a new paste to pastebin.com"
   (let* ((ptitle (buffer-name))
          (pbuffer (current-buffer))
          (pprivate (if unlisted "1" "0"))
-         (params (concat "api_dev_key=" (oref user :dev-key)
-                         "&api_user_key=" (oref user :usr-key)
+         (params (concat "api_dev_key=" (oref user dev-key)
+                         "&api_user_key=" (oref user usr-key)
                          "&api_paste_name=" (url-hexify-string ptitle)
                          "&api_paste_format=" (url-hexify-string (pastebin--get-format-string-from-major-mode))
                          "&api_paste_code=" (url-hexify-string (with-current-buffer pbuffer
@@ -454,27 +455,27 @@ Some keybinds are setted"
 The contents of paste are not stored. Instead the method
 `paste-fetch' fetch and retrieve the buffer with paste contents")
 
-(defmethod get-mode ((p pastebin--paste))
+(cl-defmethod get-mode ((p pastebin--paste))
   "return the mode from `pastebin--type-assoc'"
-  (if (slot-boundp p :format_short)
-      (car (rassoc (oref p :format_short) pastebin--type-assoc))
-    (error "No format short for paste %s with key %s" (oref p :title) (oref p :key))))
+  (if (slot-boundp p 'format_short)
+      (car (rassoc (oref p format_short) pastebin--type-assoc))
+    (error "No format short for paste %s with key %s" (oref p title) (oref p key))))
 
-(defmethod fetch-and-process ((p pastebin--paste))
+(cl-defmethod fetch-and-process ((p pastebin--paste))
   "Fetch buffer a do needed processing before switching to it"
   (with-current-buffer (paste-fetch p)
     (switch-to-buffer (current-buffer))))
 
-(defmethod paste-fetch ((p pastebin--paste))
+(cl-defmethod paste-fetch ((p pastebin--paste))
   "Fetch the raw content from paste and return buffer containing"
   (let* ((content-buf (pastebin--url-retrieve-synchronously (concat pastebin--raw-paste-url (oref p key))
                                                             "GET"
                                                             ""))
          (inhibit-read-only t)
-         (pbuf (if (and (slot-boundp p :buffer)
-                        (buffer-live-p (oref p :buffer)))
-                   (oref p :buffer)
-                 (oset p :buffer (get-buffer-create (oref p :title))))))
+         (pbuf (if (and (slot-boundp p 'buffer)
+                        (buffer-live-p (oref p buffer)))
+                   (oref p buffer)
+                 (oset p buffer (get-buffer-create (oref p title))))))
     (with-current-buffer pbuf
       (erase-buffer)
       (insert-buffer-substring content-buf)
@@ -484,17 +485,17 @@ The contents of paste are not stored. Instead the method
       (pastebin-mode 1)
       (current-buffer))))
 
-(defmethod paste-delete ((p pastebin--paste))
+(cl-defmethod paste-delete ((p pastebin--paste))
   "Detele paste from pastebin.com"
-  (unless (and (slot-boundp p :user)
-               (slot-boundp p :key)
-               (slot-boundp (oref p :user) :dev-key)
-               (slot-boundp (oref p :user) :usr-key))
+  (unless (and (slot-boundp p 'user)
+               (slot-boundp p 'key)
+               (slot-boundp (oref p user) 'dev-key)
+               (slot-boundp (oref p user) 'usr-key))
     (error "paste-delete called with ubound slot object"))
 
-  (let* ((params (concat "api_dev_key=" (oref (oref p :user) :dev-key)
-                         "&api_user_key=" (oref (oref p :user) :usr-key)
-                         "&api_paste_key=" (oref p :key)
+  (let* ((params (concat "api_dev_key=" (oref (oref p user) dev-key)
+                         "&api_user_key=" (oref (oref p user) usr-key)
+                         "&api_paste_key=" (oref p key)
                          "&api_option=delete")))
     (with-current-buffer (pastebin--url-retrieve-synchronously pastebin-post-request-paste-url
                                                                "POST"
@@ -579,8 +580,7 @@ See `fetch-list-xml' for more information"
   (unless (consp paste-sexp)
     (error "pastebin--sexp-to-paste called without cons type"))
   (condition-case err
-      (pastebin--paste (concat "paste@" (pastebin--sexp-get-attr-h paste-sexp 'paste_key))
-                       :key (pastebin--sexp-get-attr-h paste-sexp 'paste_key)
+      (pastebin--paste :key (pastebin--sexp-get-attr-h paste-sexp 'paste_key)
                        :date (pastebin--sexp-get-attr-h paste-sexp 'paste_date)
                        :title (pastebin--sexp-get-attr-h paste-sexp 'paste_title "UNTITLED")
                        :size (pastebin--sexp-get-attr-h paste-sexp 'paste_size)
@@ -676,7 +676,7 @@ See `fetch-list-xml' for more information"
   "On a buffer from a fetched paste, show the url o echo area"
   (interactive)
   (if pastebin--local-buffer-paste
-      (message (format "Paste URL: %s" (oref pastebin--local-buffer-paste :url)))
+      (message (format "Paste URL: %s" (oref pastebin--local-buffer-paste url)))
     (message (format "Current buffer is not a paste buffer"))))
 
 (defun pastebin-list-buffer-refresh ()
@@ -687,7 +687,7 @@ Operates on current buffer"
     (login pastebin--default-user))
   (refresh-paste-list pastebin--default-user)
   (switch-to-buffer (do-list-buffer pastebin--default-user))
-  (message "%d pastes fetched!" (length (oref pastebin--default-user :paste-list)))
+  (message "%d pastes fetched!" (length (oref pastebin--default-user paste-list)))
   )
 
 
@@ -712,7 +712,7 @@ Operates on current buffer"
 (defun pastebin-list-buffer-refresh-sort-by-date ()
   (interactive)
   (pastebin--sort-by-string-attr pastebin--default-user :date)
-  (oset pastebin--default-user :paste-list (reverse (oref pastebin--default-user :paste-list)))
+  (oset pastebin--default-user paste-list (reverse (oref pastebin--default-user paste-list)))
   (switch-to-buffer (do-list-buffer pastebin--default-user))
   )
 
@@ -728,21 +728,21 @@ Operates on current buffer"
   (let* ((lexical-binding t)
          (p (pastebin--get-paste-at-point)))
     (when (y-or-n-p (format "Do you really want to delete paste %s from %s\n"
-                            (oref p :title)
-                            (format-time-string "%c" (seconds-to-time (string-to-number (oref p :date))))))
+                            (oref p title)
+                            (format-time-string "%c" (seconds-to-time (string-to-number (oref p date))))))
       (message "%s" (paste-delete (pastebin--get-paste-at-point))))
     (pastebin-list-buffer-refresh)))
 
 (defun pastebin-new (p)
   "Create a new paste from buffer"
   (interactive "P")
-  (paste-create (buffer-string) p)
+  (pastebin--paste-create (buffer-string) p)
   )
 
 (defun pastebin-new-from-selection (start end)
   "Create a new paste from buffer selection"
   (interactive "r")
-  (paste-create (buffer-substring-no-properties start end))
+  (pastebin--paste-create (buffer-substring-no-properties start end))
   )
 
 (defun pastebin-create-login (&rest args)
@@ -767,10 +767,10 @@ be strings"
     ;; Function body
     (unless (and username dev-key password)
       (error "pastebin-login argument missing. (dev-key or username or password)"))
-    (setq pastebin--default-user (pastebin--paste-user username
-                                                       :username username
-                                                       :dev-key dev-key
-                                                       :password password))
+    (setq pastebin--default-user (pastebin--paste-user
+                                  :username username
+                                  :dev-key dev-key
+                                  :password password))
     (message "User %s created, login is on demand. Have a nice day!" username)
     ) ;; (let* ((lexical-bind t)
   ) ;; (defun pastebin-create-login &rest args)
