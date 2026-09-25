@@ -819,13 +819,12 @@ Operates on current buffer"
 (defun pastebin-delete-paste-at-point ()
   "Delete the paste at point"
   (interactive)
-  (let* ((lexical-binding t)
-         (p (pastebin--get-paste-at-point)))
+  (let ((p (pastebin--get-paste-at-point)))
     (when (y-or-n-p (format "Do you really want to delete paste %s from %s\n"
                             (oref p title)
                             (format-time-string "%c" (seconds-to-time (string-to-number (oref p date))))))
-      (message "%s" (paste-delete (pastebin--get-paste-at-point))))
-    (pastebin-list-buffer-refresh)))
+      (message "%s" (paste-delete p))
+      (pastebin-list-buffer-refresh))))
 
 (defun pastebin-new (p)
   "Create a new paste from buffer"
