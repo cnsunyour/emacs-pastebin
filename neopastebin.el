@@ -102,6 +102,7 @@
 ;;;
 (require 'cl-lib)
 (require 'eieio)
+(require 'subr-x)
 (require 'url)
 (require 'wid-edit)
 
@@ -459,7 +460,11 @@ Some keybinds are setted"
       (with-current-buffer (pastebin--url-retrieve-synchronously pastebin-post-request-login-url
                                                                  "POST"
                                                                  params)
-        (oset user usr-key (buffer-substring-no-properties (point-min) (point-max)))))))
+        ;; trim: a trailing newline in the response would corrupt every
+        ;; later request that carries api_user_key
+        (oset user usr-key
+              (string-trim (buffer-substring-no-properties
+                            (point-min) (point-max))))))))
 
 (defun pastebin--paste-create (buffer-data &optional unlisted)
   "Create a paste from BUFFER-DATA and kill its url.
