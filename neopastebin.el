@@ -502,7 +502,11 @@ the API `api_option=show_paste' with the user key is required."
          (pbuf (if (and (slot-boundp p 'buffer)
                         (buffer-live-p (oref p buffer)))
                    (oref p buffer)
-                 (oset p buffer (get-buffer-create (oref p title))))))
+                 ;; generate-new-buffer: never erase an existing user
+                 ;; buffer that happens to share the paste title
+                 (oset p buffer
+                       (generate-new-buffer
+                        (format "*paste: %s*" (or (oref p title) "UNTITLED")))))))
     (with-current-buffer pbuf
       (erase-buffer)
       (insert-buffer-substring content-buf)
