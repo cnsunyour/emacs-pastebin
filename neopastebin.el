@@ -135,7 +135,8 @@
   "The pastebin keymap.")
 (unless pastebin--mode-map
   (setq pastebin--mode-map (make-sparse-keymap))
-  (define-key pastebin--mode-map (kbd "C-x p u") 'pastebin-show-url))
+  ;; C-x p is the project.el prefix since Emacs 27, use C-c C-u instead
+  (define-key pastebin--mode-map (kbd "C-c C-u") 'pastebin-show-url))
 
 (define-minor-mode pastebin-mode
   "Pastebin buffer mode, used to upload pastes automatically with S-C-x C-s"
