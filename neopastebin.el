@@ -347,7 +347,7 @@ Returns nil when the user has no pastes yet - the API answers
       )))
 
 (cl-defmethod refresh-paste-list ((user pastebin--paste-user))
-  "Set/Refresh paste-list attr to the list of paste objects retrieved from pastebin.com.
+  "Set/Refresh paste-list attr from the pastes retrieved from pastebin.com.
 The old list is kept when fetching or parsing fails, and malformed
 entries are skipped instead of aborting the whole refresh"
   (let ((list-buf (fetch-list-xml user)))
@@ -378,7 +378,7 @@ entries are skipped instead of aborting the whole refresh"
   "sort :paste-list by `attr' in reverse order"
   `(progn
      (unless (member ,attr '(:key :title :format_long :format_short :url :date :private))
-      (error "pastebin--sort-by-stirng-attr attr is not in '(:key :title :format_long :format_short :url :date :private)"))
+      (error "pastebin--sort-by-string-attr attr is not in '(:key :title :format_long :format_short :url :date :private)"))
 
      (let ((attr-name (intern (substring (symbol-name ,attr) 1))))
        (oset ,user paste-list (sort (oref ,user paste-list) (lambda (p1 p2)
@@ -417,7 +417,7 @@ Some keybinds are setted"
                              "VIEW" "ID" "TITLE" "FORMAT" "DATE"))
       (dolist (paste (oref user paste-list))
         (widget-create 'link
-                       :notify (lambda (wid &rest ignore)
+                       :notify (lambda (_wid &rest _ignore)
                                  (pastebin--fetch-paste-at-point))
                        :paste paste
                        :follow-link t
@@ -617,7 +617,7 @@ If onerror is given (should be a string) is used when no such attribute
 is found.
 Attributes are described here: http://pastebin.com/api#9
 `attr' must be a symbol
-Ex: (pastebin-paste-get-attr some-paste-sexp 'paste_tittle)"
+Ex: (pastebin-paste-get-attr some-paste-sexp \\='paste_tittle)"
   (unless (symbolp attr)
     (error "attr should be a symbol"))
   (when (and onerror
@@ -675,8 +675,9 @@ If no buffer is given current buffer is used"
     (fetch-and-process p)))
 
 (defun pastebin--sexp-to-paste (paste-sexp)
-  "Given and sexp returned from `xml-parse-region' on pastebin.com response, constructs and return a pastebin--paste object.
-See `fetch-list-xml' for more information"
+  "Construct a `pastebin--paste' object from PASTE-SEXP.
+PASTE-SEXP is an sexp returned from `xml-parse-region' on a
+pastebin.com response. See `fetch-list-xml' for more information"
   (unless (consp paste-sexp)
     (error "pastebin--sexp-to-paste called without cons type"))
   (condition-case err
@@ -855,8 +856,7 @@ NOTE: `args' is a keryword list using :username and :dev-key that should
 be strings"
   ;; Keyword arguments work arround
   ;; I want to get rid of cl dependence here
-  (let* ((lexical-bind t)
-         username
+  (let* (username
          dev-key
          password)
     (while args
