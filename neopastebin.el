@@ -654,8 +654,10 @@ If no buffer is given current buffer is used"
     (with-current-buffer buffer
       (goto-char (point-min))
       (re-search-forward "\n\n")
-    (kill-region (point-min) (point))
-    buffer)))
+      ;; delete-region, not kill-region: response headers must not end
+      ;; up on the kill-ring
+      (delete-region (point-min) (point))
+      buffer)))
 
 (defun pastebin--get-paste-at-point ()
   "Get the paste at point at current-buffer"
