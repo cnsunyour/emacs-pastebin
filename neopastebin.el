@@ -351,13 +351,14 @@ Returns nil when the user has no pastes yet - the API answers
 (cl-defmethod refresh-paste-list ((user pastebin--paste-user))
   "Set/Refresh paste-list attr from the pastes retrieved from pastebin.com.
 The old list is kept when fetching or parsing fails, and malformed
-entries are skipped instead of aborting the whole refresh"
-  (let ((list-buf (fetch-list-xml user)))
+entries are skipped instead of aborting the whole refresh. An empty
+account publishes an empty list"
+  (let ((list-buf (fetch-list-xml user))
+        plist)
     (when list-buf
       (with-current-buffer list-buf
         (goto-char (point-min))
-        (let ((i (point-min))
-              plist)
+        (let ((i (point-min)))
           (while (re-search-forward "</paste>" nil t)
             (let ((paste-sexp (xml-parse-region i (point))))
               (setq i (point))
@@ -369,10 +370,10 @@ entries are skipped instead of aborting the whole refresh"
                 (error
                  (message "Skipping malformed paste entry: %s" err))))
             )
-          ;; atomic swap: publish the list only after a full parse
-          (oset user paste-list plist)
           ))
       (kill-buffer list-buf))
+    ;; atomic swap: publish the list only after a full parse
+    (oset user paste-list plist)
     )
   )
 
