@@ -729,13 +729,19 @@ pastebin.com response. See `fetch-list-xml' for more information"
         (kill-buffer content-buf)
         (error "pastebin--url-retrieve-synchronously HTTP %s: %.300s"
                (or status "malformed") body))) ;; header is OK ...
-    (with-current-buffer content-buf
-      (goto-char (point-min))
-      (pastebin--strip-http-header)
-      (pastebin--error-if-bad-response (current-buffer)) ;; two `with-current-buffer' on same buffer :-/ slow
-      )
-    content-buf ;; return the buffer
-    ))
+    (condition-case err
+        (progn
+          (with-current-buffer content-buf
+            (goto-char (point-min))
+            (pastebin--strip-http-header)
+            (pastebin--error-if-bad-response (current-buffer)) ;; two `with-current-buffer' on same buffer :-/ slow
+            )
+          content-buf) ;; return the buffer
+      (error
+       ;; pastebin may also deliver API errors on a 2xx status: clean
+       ;; up the response buffer before propagating
+       (kill-buffer content-buf)
+       (signal (car err) (cdr err))))))
 
 (defun pastebin--error-if-bad-response (buf)
   "Raises a error if is a bad response from pastebin"
