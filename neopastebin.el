@@ -129,6 +129,11 @@
   :type 'string
   :group 'pastebin)
 
+(defcustom pastebin-post-request-raw-url "https://pastebin.com/api/api_raw.php"
+  "Raw paste output url, serves `api_option=show_paste'"
+  :type 'string
+  :group 'pastebin)
+
 ;; Global variables
 
 (defvar pastebin--mode-map nil
@@ -557,7 +562,7 @@ the API `api_option=show_paste' with the user key is required."
                          "&api_user_key=" (oref user usr-key)
                          "&api_paste_key=" (oref p key)
                          "&api_option=show_paste")))
-    (pastebin--url-retrieve-synchronously pastebin-post-request-paste-url
+    (pastebin--url-retrieve-synchronously pastebin-post-request-raw-url
                                           "POST"
                                           params)))
 
