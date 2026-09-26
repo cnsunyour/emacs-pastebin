@@ -356,22 +356,25 @@ account publishes an empty list"
   (let ((list-buf (fetch-list-xml user))
         plist)
     (when list-buf
-      (with-current-buffer list-buf
-        (goto-char (point-min))
-        (let ((i (point-min)))
-          (while (re-search-forward "</paste>" nil t)
-            (let ((paste-sexp (xml-parse-region i (point))))
-              (setq i (point))
-              (condition-case err
-                  (let ((p (pastebin--sexp-to-paste paste-sexp)))
-                    (oset p user user)
-                    (oset p last-fetched (float-time))
-                    (setq plist (append plist (list p))))
-                (error
-                 (message "Skipping malformed paste entry: %s" err))))
+      (unwind-protect
+          (with-current-buffer list-buf
+            (goto-char (point-min))
+            (let ((i (point-min)))
+              (while (re-search-forward "</paste>" nil t)
+                (let ((start i))
+                  (setq i (point))
+                  ;; both XML parsing and object conversion are guarded:
+                  ;; a broken entry is skipped, not fatal
+                  (condition-case err
+                      (let* ((paste-sexp (xml-parse-region start i))
+                             (p (pastebin--sexp-to-paste paste-sexp)))
+                        (oset p user user)
+                        (oset p last-fetched (float-time))
+                        (setq plist (append plist (list p))))
+                    (error
+                     (message "Skipping malformed paste entry: %s" err))))))
             )
-          ))
-      (kill-buffer list-buf))
+        (kill-buffer list-buf)))
     ;; atomic swap: publish the list only after a full parse
     (oset user paste-list plist)
     )
