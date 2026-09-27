@@ -704,11 +704,13 @@ If no buffer is given current buffer is used"
   (let ((buffer (or buffer (current-buffer))))
     (with-current-buffer buffer
       (goto-char (point-min))
-      (re-search-forward "\n\n")
-      ;; delete-region, not kill-region: response headers must not end
-      ;; up on the kill-ring
-      (delete-region (point-min) (point))
-      buffer)))
+      ;; tolerate a missing header separator: the status check decides
+      ;; how such a malformed response fails, not a cryptic search error
+      (when (re-search-forward "\n\n" nil t)
+        ;; delete-region, not kill-region: response headers must not end
+        ;; up on the kill-ring
+        (delete-region (point-min) (point))))
+    buffer))
 
 (defun pastebin--get-paste-at-point ()
   "Get the paste at point at current-buffer"
@@ -763,21 +765,26 @@ pastebin.com response. See `fetch-list-xml' for more information"
     (unwind-protect
         (progn
           (let ((status (pastebin--http-status content-buf)))
+            (with-current-buffer content-buf
+              (goto-char (point-min))
+              (pastebin--strip-http-header)
+              ;; url hands the body over as raw bytes, but pastebin
+              ;; speaks utf-8: decode them so every consumer gets
+              ;; characters. bytes that are not valid utf-8 survive as
+              ;; raw-byte characters instead of failing the request
+              (let ((decoded (decode-coding-string (buffer-string) 'utf-8)))
+                (erase-buffer)
+                (set-buffer-multibyte t)
+                (insert decoded)))
             (unless (and status (>= status 200) (< status 300))
               ;; Pastebin reports API errors on non-2xx responses, the reason
-              ;; is in the body: surface it instead of a generic message
-              (let ((body (with-current-buffer content-buf
-                            (goto-char (point-min))
-                            (if (re-search-forward "\n\n" nil t)
-                                (buffer-substring-no-properties (point) (point-max))
-                              ""))))
-                (error "pastebin--url-retrieve-synchronously HTTP %s: %.300s"
-                       (or status "malformed") body)))) ;; header is OK ...
+              ;; is in the decoded body: surface it instead of a generic message
+              (error "pastebin--url-retrieve-synchronously HTTP %s: %.300s"
+                     (or status "malformed")
+                     (with-current-buffer content-buf
+                       (string-trim (buffer-string))))))
           (with-current-buffer content-buf
-            (goto-char (point-min))
-            (pastebin--strip-http-header)
-            (pastebin--error-if-bad-response (current-buffer)) ;; two `with-current-buffer' on same buffer :-/ slow
-            )
+            (pastebin--error-if-bad-response (current-buffer))) ;; two `with-current-buffer' on same buffer :-/ slow
           (setq done t)
           content-buf) ;; return the buffer
       ;; success hands the buffer to the caller, keep it alive; on any
@@ -794,6 +801,9 @@ pastebin.com response. See `fetch-list-xml' for more information"
     (error "pastebin--bad-presponse-p `buf' need be a buffer or a string"))
 
   (with-current-buffer buf
+    ;; search the whole body: the point position at call time must not
+    ;; decide what gets checked
+    (goto-char (point-min))
     (if (or
          (save-excursion
            (re-search-forward "Bad API request," nil t))
