@@ -131,6 +131,11 @@
   :tag "Pastebin"
   :group 'tools)
 
+;; Error symbols: both carry (USER-VISIBLE-MESSAGE RESPONSE-BODY), the
+;; body is the full decoded response for callers to classify
+(define-error 'pastebin-http-error "Pastebin HTTP error")
+(define-error 'pastebin-api-error "Pastebin API error")
+
 ;; Customs
 
 (defcustom pastebin-default-paste-list-limit 100
@@ -364,21 +369,23 @@ the authenticated API, see `paste-fetch'.")
   "Fetch the list of pastes as xml, and return that buffer.
 Returns nil when the user has no pastes yet - the API answers
 \"No pastes found.\" which is a normal state, not an error"
-  (let* ((params (concat "api_dev_key=" (oref user dev-key)
-                         "&api_user_key=" (oref user usr-key)
-                         "&api_results_limit=" (format "%d" pastebin-default-paste-list-limit)
-                         "&api_option=list")))
-    (with-current-buffer (pastebin--url-retrieve-synchronously pastebin-post-request-paste-url
-                                                               "POST"
-                                                               params)
-      (pastebin--strip-CRs)
-      (goto-char (point-min))
-      (if (looking-at-p "No pastes found.")
-          (progn
-            (kill-buffer (current-buffer))
-            nil)
-        (current-buffer))
-      )))
+  (pastebin--with-user-key
+   user
+   (lambda (usr-key)
+     (let ((params (concat "api_dev_key=" (oref user dev-key)
+                           "&api_user_key=" usr-key
+                           "&api_results_limit=" (format "%d" pastebin-default-paste-list-limit)
+                           "&api_option=list")))
+       (with-current-buffer (pastebin--url-retrieve-synchronously pastebin-post-request-paste-url
+                                                                  "POST"
+                                                                  params)
+         (pastebin--strip-CRs)
+         (goto-char (point-min))
+         (if (looking-at-p "No pastes found.")
+             (progn
+               (kill-buffer (current-buffer))
+               nil)
+           (current-buffer)))))))
 
 (cl-defmethod refresh-paste-list ((user pastebin--paste-user))
   "Set/Refresh paste-list attr from the pastes retrieved from pastebin.com.
@@ -532,6 +539,48 @@ gets unbound once the login succeeds"
           (slot-makeunbound user 'password))
         (oref user usr-key)))))
 
+(defun pastebin--stale-user-key-error-p (err)
+  "Return non-nil when ERR blames the cached user key
+These are pastebin's official answers for an unusable api_user_key:
+\"Bad API request, invalid api_user_key\" and \"Bad API request,
+invalid or expired api_user_key\". ERR is a condition-case error
+description of either `pastebin-http-error' or `pastebin-api-error',
+the response body sits in its third element"
+  (and (memq (car err) '(pastebin-http-error pastebin-api-error))
+       (stringp (nth 2 err))
+       (string-match-p "Bad API request, invalid\\( or expired\\)? api_user_key"
+                       (nth 2 err))))
+
+(defun pastebin--with-user-key (user body)
+  "Run BODY with the user key of USER, retrying once on stale keys
+BODY receives the user key string and returns the request result.
+When the request fails with an error that clearly blames the user
+key - see `pastebin--stale-user-key-error-p' - the cached key is
+dropped, USER logs in again and BODY runs once more with the fresh
+key. Any other error, a second failure, or the absence of a usable
+password source (a burnt legacy password) propagates the first
+error untouched. BODY must build its request inside itself: the
+retry needs the fresh key, replaying old parameters would not do"
+  (let (retried)
+    (catch 'pastebin--with-user-key-done
+      (while t
+        (condition-case err
+            (throw 'pastebin--with-user-key-done
+                   (funcall body (login user)))
+          ((pastebin-http-error pastebin-api-error)
+           (unless (and (not retried)
+                        (pastebin--stale-user-key-error-p err)
+                        (or (slot-boundp user 'password-auth-source)
+                            (slot-boundp user 'password-function)
+                            (slot-boundp user 'password)))
+             (signal (car err) (cdr err)))
+           (setq retried t)
+           ;; the cached key is the stale one: drop it before logging
+           ;; in again, `login' would just hand it right back
+           (when (slot-boundp user 'usr-key)
+             (slot-makeunbound user 'usr-key))
+           (login user)))))))
+
 (defun pastebin--paste-create (buffer-data &optional unlisted)
   "Create a paste from BUFFER-DATA and kill its url.
 Shared by `pastebin-new' and `pastebin-new-from-selection'"
@@ -556,19 +605,22 @@ Shared by `pastebin-new' and `pastebin-new-from-selection'"
   "Upload a new paste to pastebin.com"
   (let* ((ptitle (buffer-name))
          (pbuffer (current-buffer))
-         (pprivate (if unlisted "1" "0"))
-         (params (concat "api_dev_key=" (oref user dev-key)
-                         "&api_user_key=" (oref user usr-key)
-                         "&api_paste_name=" (url-hexify-string ptitle)
-                         "&api_paste_format=" (url-hexify-string (pastebin--get-format-string-from-major-mode))
-                         "&api_paste_code=" (url-hexify-string (with-current-buffer pbuffer
-                                                                 buffer-data))
-                         "&api_option=paste"
-                         "&api_paste_private=" pprivate)))
-    (with-current-buffer (pastebin--url-retrieve-synchronously pastebin-post-request-paste-url
-                                                               "POST"
-                                                               params)
-      (current-buffer))))
+         (pprivate (if unlisted "1" "0")))
+    (pastebin--with-user-key
+     user
+     (lambda (usr-key)
+       (let ((params (concat "api_dev_key=" (oref user dev-key)
+                             "&api_user_key=" usr-key
+                             "&api_paste_name=" (url-hexify-string ptitle)
+                             "&api_paste_format=" (url-hexify-string (pastebin--get-format-string-from-major-mode))
+                             "&api_paste_code=" (url-hexify-string (with-current-buffer pbuffer
+                                                                     buffer-data))
+                             "&api_option=paste"
+                             "&api_paste_private=" pprivate)))
+         (with-current-buffer (pastebin--url-retrieve-synchronously pastebin-post-request-paste-url
+                                                                    "POST"
+                                                                    params)
+           (current-buffer)))))))
 
 
 
@@ -632,14 +684,17 @@ the paste unopenable"
   "Fetch the content of private paste P via the authenticated API.
 The raw url only serves public and unlisted pastes; for private ones
 the API `api_option=show_paste' with the user key is required."
-  (let* ((user (oref p user))
-         (params (concat "api_dev_key=" (oref user dev-key)
-                         "&api_user_key=" (oref user usr-key)
-                         "&api_paste_key=" (oref p key)
-                         "&api_option=show_paste")))
-    (pastebin--url-retrieve-synchronously pastebin-post-request-raw-url
-                                          "POST"
-                                          params)))
+  (let ((user (oref p user)))
+    (pastebin--with-user-key
+     user
+     (lambda (usr-key)
+       (let ((params (concat "api_dev_key=" (oref user dev-key)
+                             "&api_user_key=" usr-key
+                             "&api_paste_key=" (oref p key)
+                             "&api_option=show_paste")))
+         (pastebin--url-retrieve-synchronously pastebin-post-request-raw-url
+                                               "POST"
+                                               params))))))
 
 (cl-defmethod paste-fetch ((p pastebin--paste))
   "Fetch the raw content from paste and return buffer containing"
@@ -676,16 +731,20 @@ the API `api_option=show_paste' with the user key is required."
                (slot-boundp (oref p user) 'usr-key))
     (error "paste-delete called with ubound slot object"))
 
-  (let* ((params (concat "api_dev_key=" (oref (oref p user) dev-key)
-                         "&api_user_key=" (oref (oref p user) usr-key)
-                         "&api_paste_key=" (oref p key)
-                         "&api_option=delete"))
-         (resp-buf (pastebin--url-retrieve-synchronously pastebin-post-request-paste-url
-                                                         "POST"
-                                                         params)))
-    (with-current-buffer resp-buf
-      (prog1 (buffer-string) ;; Pastebin send somthing like paste xxx deleted
-        (kill-buffer resp-buf)))))
+  (let ((user (oref p user)))
+    (pastebin--with-user-key
+     user
+     (lambda (usr-key)
+       (let* ((params (concat "api_dev_key=" (oref user dev-key)
+                              "&api_user_key=" usr-key
+                              "&api_paste_key=" (oref p key)
+                              "&api_option=delete"))
+              (resp-buf (pastebin--url-retrieve-synchronously pastebin-post-request-paste-url
+                                                              "POST"
+                                                              params)))
+         (with-current-buffer resp-buf
+           (prog1 (buffer-string) ;; Pastebin send somthing like paste xxx deleted
+             (kill-buffer resp-buf))))))))
 
 ;; Local functions and helpers
 
@@ -817,10 +876,13 @@ pastebin.com response. See `fetch-list-xml' for more information"
             (unless (and status (>= status 200) (< status 300))
               ;; Pastebin reports API errors on non-2xx responses, the reason
               ;; is in the decoded body: surface it instead of a generic message
-              (error "pastebin--url-retrieve-synchronously HTTP %s: %.300s"
-                     (or status "malformed")
-                     (with-current-buffer content-buf
-                       (string-trim (buffer-string))))))
+              (let ((body (with-current-buffer content-buf
+                            (string-trim (buffer-string)))))
+                (signal 'pastebin-http-error
+                        (list (format "pastebin--url-retrieve-synchronously HTTP %s: %.300s"
+                                      (or status "malformed") body)
+                              (with-current-buffer content-buf
+                                (buffer-string)))))))
           (with-current-buffer content-buf
             (pastebin--error-if-bad-response (current-buffer))) ;; two `with-current-buffer' on same buffer :-/ slow
           (setq done t)
@@ -847,7 +909,9 @@ pastebin.com response. See `fetch-list-xml' for more information"
            (re-search-forward "Bad API request," nil t))
          (save-excursion
            (re-search-forward "URL Post limit, maximum pastes per 24h reached" nil t)))
-        (error "Pastebin bad response: %s" (buffer-string))
+        (let ((body (buffer-string)))
+          (signal 'pastebin-api-error
+                  (list (format "Pastebin bad response: %s" body) body)))
       nil)))
 
 
