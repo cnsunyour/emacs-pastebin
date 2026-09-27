@@ -80,6 +80,18 @@
 ;;; p ->   order by private
 ;;;
 ;;;
+;;;     PASTE BUFFERS
+;;;     ~~~~~~~~~~~~~
+;;;
+;;; RET on a paste opens its content in "*paste: TITLE*". Known pastebin
+;;; languages are highlighted through their major mode; for formats
+;;; pastebin does not know, the paste title's file extension is matched
+;;; against `auto-mode-alist' - an uploaded "init.fish" opens in
+;;; fish-mode when that mode is installed. To highlight by hand just
+;;; paste M-x <language>-mode: the pastebin minor mode survives the
+;;; switch.
+;;;
+;;;
 ;;;     CREATING NEW PASTE
 ;;;     ~~~~~~~~~~~~~~~~~~
 ;;;
@@ -155,6 +167,9 @@
   :lighter " pastebin"
   :group 'pastebin
   :keymap pastebin--mode-map)
+;; survive major mode switches: pasting M-x <language>-mode in a paste
+;; buffer keeps the pastebin keymap and lighter
+(put 'pastebin-mode 'permanent-local t)
 
 (defvar pastebin--type-assoc
   '((actionscript-mode . "actionscript")
@@ -297,6 +312,9 @@ Prefer built-in modes; modes that are not installed fall back to
 (defvar pastebin--local-buffer-paste nil
   "Every pastebin buffer has a paste object associated with it")
 (make-variable-buffer-local 'pastebin--local-buffer-paste)
+;; a paste buffer keeps its identity across major mode switches,
+;; e.g. when you paste M-x <language>-mode in it
+(put 'pastebin--local-buffer-paste 'permanent-local t)
 
 (defvar pastebin--list-buffer-user nil
   "Every pastebin list buffer has a user object associated with it")
@@ -576,14 +594,34 @@ The contents of paste are not stored. Instead the method
 
 (cl-defmethod get-mode ((p pastebin--paste))
   "Return the major mode matching the paste format.
-Falls back to `text-mode' when the format is unknown or its mode is
-not installed - a missing mode must not make the paste unopenable"
+Three levels: a known pastebin format wins when its mode is
+installed; otherwise the paste title's file extension is matched
+against `auto-mode-alist' - the same registry Emacs uses for files,
+covering formats pastebin itself does not know (an uploaded
+\"init.fish\" opens in `fish-mode' when that is installed). Falls
+back to `text-mode': a missing or unknown format must never make
+the paste unopenable"
   (let* ((format (and (slot-boundp p 'format_short)
+                      (stringp (oref p format_short))
                       (intern (oref p format_short))))
-         (mode (cdr (assq format pastebin--format-mode-alist))))
-    (if (and mode (fboundp mode))
-        mode
-      'text-mode)))
+         (format-mode (and format
+                           (cdr (assq format pastebin--format-mode-alist))))
+         (title (and (slot-boundp p 'title)
+                     (stringp (oref p title))
+                     (oref p title)))
+         (title-mode (and title
+                          (not (string-empty-p title))
+                          (assoc-default title auto-mode-alist
+                                         #'string-match-p))))
+    (or (and format-mode
+             (fboundp format-mode)
+             ;; "text" and unknown formats leave the title a chance
+             (not (eq format-mode 'text-mode))
+             format-mode)
+        (and (symbolp title-mode)
+             (fboundp title-mode)
+             title-mode)
+        'text-mode)))
 
 (cl-defmethod fetch-and-process ((p pastebin--paste))
   "Fetch buffer a do needed processing before switching to it"

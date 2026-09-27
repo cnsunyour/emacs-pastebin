@@ -102,6 +102,15 @@ k ->   order by key
 p ->   order by private
 ```
 
+### Highlighting
+
+Pastes open with the major mode matching the language chosen on
+pastebin. For formats pastebin does not list, the paste title's file
+extension is matched against `auto-mode-alist` - an uploaded
+`init.fish` opens in `fish-mode` when that mode is installed. To pick
+a language by hand just run the mode's command (e.g. `M-x fish-mode`)
+inside the paste buffer: the pastebin minor mode survives the switch.
+
 ### Creating a new paste
 
 M-x `pastebin-new` -> will create a new paste from current buffer
