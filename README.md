@@ -30,10 +30,9 @@ Then put this on your `.emacs` file:
 ```elisp
 (add-to-list 'load-path "~/.emacs.d/lisp/emacs-pastebin-master/")
 (require 'neopastebin)
-(let ((credentials (auth-source-user-and-password "pastebin.com")))
-  (pastebin-create-login :username "YOURUSER"
-                         :dev-key (car credentials)
-                         :password (cadr credentials)))
+(pastebin-create-login :username "YOURUSER"
+                       :dev-key "YOURDEVKEY"
+                       :password-auth-source '(:host "pastebin.com" :user "YOURUSER"))
 ```
 
 Or, use `use-package` like this:
@@ -45,20 +44,43 @@ Or, use `use-package` like this:
   :commands
   pastebin-list-buffer-refresh
   pastebin-new
+  pastebin-logout
   :config
-  (let ((credentials (auth-source-user-and-password "pastebin.com")))
-    (pastebin-create-login :username "YOURUSER"
-                           :dev-key (car credentials)
-                           :password (cadr credentials))))
+  (pastebin-create-login :username "YOURUSER"
+                         :dev-key "YOURDEVKEY"
+                         :password-auth-source '(:host "pastebin.com" :user "YOURUSER")))
 ```
 
-Before that, you should store `dev-key` and `password` in the `~/.authinfo.gpg` file:
+Before that, store your password in the `~/.authinfo.gpg` file:
 
 ```text
-machine pastebin.com login YOURDEVKEY password YOURPASSWORD
+machine pastebin.com login YOURUSER password YOURPASSWORD
 ```
 
+The `:password-auth-source` spec tells the package how to find that entry:
+the password is looked up through `auth-source` only when a login is
+actually needed, and it is not kept in memory afterwards. If you prefer not
+to have `username`/`dev-key` in your init file either, store each of them
+in its own `auth-source` entry and read them at call time with
+`auth-source-pick-first-password` - that function returns the entry's
+secret, so the value goes into the `password` field of the entry.
+
 Restart emacs or eval `.emacs` again. On emacs `M-x pastebin-list-buffer-refresh <RET>`. You should see a nice list of pastes on your screen right now.
+
+## Security
+
+- With `:password-auth-source` or `:password-function`, the password is
+  fetched only when a login happens and is not kept in the user object.
+  The legacy `:password` string stays in memory until the first successful
+  login clears it, and `username`/`dev-key` are kept for the whole session.
+- After a login, the user key (`usr-key`) is kept in memory so later API
+  calls don't need to log in again. It is a bearer token: run
+  `M-x pastebin-logout` to drop it.
+- Do not add `pastebin--default-user` to `desktop-globals-to-save`, and
+  keep `url-http-debug` disabled: it can log request data, credentials
+  included.
+- `auth-source` may keep its own in-memory cache for a couple of hours;
+  that is outside the control of this package.
 
 ## Usage
 

@@ -35,23 +35,29 @@
 ;;;
 ;;; Puts this on your .emacs file
 ;;;
-;;;   (let ((credentials (auth-source-user-and-password "pastebin.com")))
-;;;     (pastebin-create-login :username "YOURUSER"
-;;;                            :dev-key (car credentials)
-;;;                            :password (cadr credentials)))
+;;;   (pastebin-create-login :username "YOURUSER"
+;;;                          :dev-key "YOURDEVKEY"
+;;;                          :password-auth-source '(:host "pastebin.com" :user "YOURUSER"))
 ;;;
-;;; Login will only ocurr when you try to paste something or
-;;; list your pastes. So is save to put this on your .emacs file
-;;; without need to wait emacs connect to pastebin on each startup.
+;;; with a matching entry on your ~/.authinfo.gpg:
+;;;
+;;;   machine pastebin.com login YOURUSER password YOURPASSWORD
+;;;
+;;; Login will only occur when you try to paste something or list your
+;;; pastes, and the password is looked up through `auth-source' only
+;;; when needed - it does not stay in memory between logins.
 ;;;
 ;;;
 ;;; -*- SECURITY REMINDER -*-
 ;;;
-;;; It is NOT recommended to write "dev-key/password" to your .emacs file. You
-;;; should use `auth-source' or `auth-source-pass' package(s) to store and
-;;; read your "dev-key/password" securely.
+;;; Prefer `:password-auth-source' or `:password-function' over the legacy
+;;; `:password' string: with the legacy form the password stays in memory
+;;; until the first successful login clears it. The cached `usr-key' is a
+;;; bearer token - run M-x pastebin-logout to discard it. Do not save
+;;; `pastebin--default-user' with `desktop-save', and keep `url-http-debug'
+;;; turned off: it logs request data, credentials included.
 ;;;
-;;; Since pastebin uses https instead http, your "dev-key/password" are secure
+;;; Since pastebin uses https instead of http, your credentials are secure
 ;;; during transmission on network.
 ;;;
 ;;;
@@ -101,6 +107,7 @@
 ;;;
 ;;; Codes:
 ;;;
+(require 'auth-source)
 (require 'cl-lib)
 (require 'eieio)
 (require 'subr-x)
@@ -319,9 +326,11 @@ the authenticated API, see `paste-fetch'.")
 ;; PASTE-USER class
 
 (defclass pastebin--paste-user ()
-  ((dev-key :initarg :dev-key "Your developer key from http://pastebin.com/api")
-   (usr-key :initarg :usr-key "Your user key, retrived from pastebin")
-   (password :initarg :password "Your password, clear text honey!!")
+  ((dev-key :initarg :dev-key "Your developer key from http://pastebin.com/api (sensitive)")
+   (usr-key :initarg :usr-key "Your user key from pastebin - a bearer token, clear it with pastebin-logout")
+   (password :initarg :password "Legacy clear text password, unbound after the first successful login")
+   (password-auth-source :initarg :password-auth-source "Auth-source spec plist used to look the password up when the login happens")
+   (password-function :initarg :password-function "Function returning the password, called when the login happens")
    (username :initarg :username "Your username")
    (paste-list :initarg :paste-list "The list of pastes for this user")
    (list-buffer :initarg :list-buffer "Done by do-list-buffer")
@@ -459,23 +468,51 @@ Some keybinds are setted"
   )
 
 (cl-defmethod login ((user pastebin--paste-user))
-  "Given user and password login and sets usr-key"
+  "Log USER in on demand and return its user key
+The password is only looked up when no `usr-key' is cached yet:
+through `auth-source' (see `pastebin-create-login'), by calling
+`password-function', or from the legacy `password' slot - which
+gets unbound once the login succeeds"
   (if (slot-boundp user 'usr-key)
       (oref user usr-key)
-    (let* ((params (concat "api_dev_key=" (oref user dev-key)
-                           "&api_user_name=" (url-hexify-string (oref user username))
-                           "&api_user_password=" (url-hexify-string (oref user password))))
-           (resp-buf (pastebin--url-retrieve-synchronously pastebin-post-request-login-url
-                                                           "POST"
-                                                           params)))
-      (with-current-buffer resp-buf
-        ;; trim: a trailing newline in the response would corrupt every
-        ;; later request that carries api_user_key
-        (oset user usr-key
-              (string-trim (buffer-substring-no-properties
-                            (point-min) (point-max)))))
-      (kill-buffer resp-buf)
-      (oref user usr-key))))
+    (let ((password (cond ((slot-boundp user 'password-auth-source)
+                           (apply #'auth-source-pick-first-password
+                                  (oref user password-auth-source)))
+                          ((slot-boundp user 'password-function)
+                           (funcall (oref user password-function)))
+                          ((slot-boundp user 'password)
+                           (oref user password))
+                          (t
+                           (error "pastebin login: no password configured")))))
+      (unless (stringp password)
+        (error "pastebin login: password provider did not return a string"))
+      (let* ((params (concat "api_dev_key=" (oref user dev-key)
+                             "&api_user_name=" (url-hexify-string (oref user username))
+                             "&api_user_password=" (url-hexify-string password)))
+             (resp-buf (pastebin--url-retrieve-synchronously pastebin-post-request-login-url
+                                                             "POST"
+                                                             params)))
+        (unwind-protect
+            (with-current-buffer resp-buf
+              ;; trim: a trailing newline in the response would corrupt every
+              ;; later request that carries api_user_key
+              (let ((key (string-trim (buffer-substring-no-properties
+                                       (point-min) (point-max)))))
+                ;; a valid user key is a non-empty, whitespace-free token:
+                ;; an empty or multi-word answer is an unrecognized error,
+                ;; not a key - refuse it so the legacy password survives
+                ;; for a retry
+                (unless (and (not (string-empty-p key))
+                             (not (string-match-p "[ \t\r\n\f]" key)))
+                  (error "pastebin login: got no valid user key, check your credentials"))
+                (oset user usr-key key)))
+          (when (buffer-live-p resp-buf)
+            (kill-buffer resp-buf)))
+        ;; Burn the legacy password: once logged in it is useless. It is
+        ;; kept when the login fails so the login can be retried
+        (when (slot-boundp user 'password)
+          (slot-makeunbound user 'password))
+        (oref user usr-key)))))
 
 (defun pastebin--paste-create (buffer-data &optional unlisted)
   "Create a paste from BUFFER-DATA and kill its url.
@@ -722,31 +759,33 @@ pastebin.com response. See `fetch-list-xml' for more information"
           '(("Content-Type" . "application/x-www-form-urlencoded")))
          (url-request-data params)
          (content-buf (url-retrieve-synchronously url))
-         (status (pastebin--http-status content-buf)))
-    (unless (and status (>= status 200) (< status 300))
-      ;; Pastebin reports API errors on non-2xx responses, the reason
-      ;; is in the body: surface it instead of a generic message
-      (let ((body (with-current-buffer content-buf
-                    (goto-char (point-min))
-                    (if (re-search-forward "\n\n" nil t)
-                        (buffer-substring-no-properties (point) (point-max))
-                      ""))))
-        (kill-buffer content-buf)
-        (error "pastebin--url-retrieve-synchronously HTTP %s: %.300s"
-               (or status "malformed") body))) ;; header is OK ...
-    (condition-case err
+         done)
+    (unwind-protect
         (progn
+          (let ((status (pastebin--http-status content-buf)))
+            (unless (and status (>= status 200) (< status 300))
+              ;; Pastebin reports API errors on non-2xx responses, the reason
+              ;; is in the body: surface it instead of a generic message
+              (let ((body (with-current-buffer content-buf
+                            (goto-char (point-min))
+                            (if (re-search-forward "\n\n" nil t)
+                                (buffer-substring-no-properties (point) (point-max))
+                              ""))))
+                (error "pastebin--url-retrieve-synchronously HTTP %s: %.300s"
+                       (or status "malformed") body)))) ;; header is OK ...
           (with-current-buffer content-buf
             (goto-char (point-min))
             (pastebin--strip-http-header)
             (pastebin--error-if-bad-response (current-buffer)) ;; two `with-current-buffer' on same buffer :-/ slow
             )
+          (setq done t)
           content-buf) ;; return the buffer
-      (error
-       ;; pastebin may also deliver API errors on a 2xx status: clean
-       ;; up the response buffer before propagating
-       (kill-buffer content-buf)
-       (signal (car err) (cdr err))))))
+      ;; success hands the buffer to the caller, keep it alive; on any
+      ;; other exit path - HTTP errors, pastebin API errors on a 2xx
+      ;; status, errors while parsing the status line - clean it up
+      (unless done
+        (when (buffer-live-p content-buf)
+          (kill-buffer content-buf))))))
 
 (defun pastebin--error-if-bad-response (buf)
   "Raises a error if is a bad response from pastebin"
@@ -813,6 +852,20 @@ Operates on current buffer"
     (message "%d pastes fetched!" (length (oref user paste-list))))
   )
 
+(defun pastebin-logout ()
+  "Forget the cached user key of the default pastebin user
+The user key is a bearer token, this drops it from memory. The next
+API call will log in again, asking the password source for a password.
+Note: the legacy :password channel is consumed by the first login -
+after a logout it needs `pastebin-create-login' again"
+  (interactive)
+  (if (and pastebin--default-user
+           (slot-boundp pastebin--default-user 'usr-key))
+      (progn
+        (slot-makeunbound pastebin--default-user 'usr-key)
+        (message "Pastebin user key cleared"))
+    (message "No pastebin user is logged in")))
+
 
 (defun pastebin-list-buffer-refresh-sort-by-title ()
   (interactive)
@@ -869,31 +922,75 @@ Operates on current buffer"
 
 (defun pastebin-create-login (&rest args)
   "Create a login data. The effective login will be done when needed
-NOTE: `args' is a keryword list using :username and :dev-key that should
-be strings"
+`args' is a keyword list. :username and :dev-key are required strings.
+Exactly one password source must be given:
+
+  :password-auth-source  plist spec passed to `auth-source-pick-first-password'
+                         when the login happens, e.g.
+                         \='(:host \"pastebin.com\" :user \"YOURUSER\")
+  :password-function     function called with no arguments when the login
+                         happens, returning the password as a string
+  :password              legacy plain string, kept in memory until the
+                         first successful login clears it"
   ;; Keyword arguments work arround
   ;; I want to get rid of cl dependence here
-  (let* (username
-         dev-key
-         password)
+  (let* ((missing (make-symbol "missing"))
+         (username missing)
+         (dev-key missing)
+         (password-auth-source missing)
+         (password-function missing)
+         (password missing))
     (while args
-      (cond ((eq (car-safe args) :username)
-             (setq username (car-safe (cdr-safe args))))
-            ((eq (car-safe args) :dev-key)
-             (setq dev-key (car-safe (cdr-safe args))))
-            ((eq (car-safe args) :password)
-             (setq password (car-safe (cdr-safe args))))
-            ) ;; (cond ..
-      (setq args (cdr-safe args)))
+      (let ((key (pop args))
+            value)
+        (unless (memq key '(:username :dev-key :password-auth-source
+                            :password-function :password))
+          (error "pastebin-create-login: unknown keyword %s" key))
+        (if args
+            (setq value (pop args))
+          (error "pastebin-create-login: missing value for %s" key))
+        (cond ((eq key :username)             (setq username value))
+              ((eq key :dev-key)              (setq dev-key value))
+              ((eq key :password-auth-source) (setq password-auth-source value))
+              ((eq key :password-function)    (setq password-function value))
+              ((eq key :password)             (setq password value)))))
     ;; Function body
-    (unless (and username dev-key password)
-      (error "pastebin-login argument missing. (dev-key or username or password)"))
-    (setq pastebin--default-user (pastebin--paste-user
-                                  :username username
-                                  :dev-key dev-key
-                                  :password password))
+    (unless (and (stringp username) (stringp dev-key))
+      (error "pastebin-create-login argument missing or not a string. (username or dev-key)"))
+    (unless (= 1 (+ (if (eq password-auth-source missing) 0 1)
+                    (if (eq password-function missing) 0 1)
+                    (if (eq password missing) 0 1)))
+      (error "pastebin-create-login: give exactly one of :password-auth-source, :password-function or :password"))
+    (cond
+     ;; This channel exists to keep clear text passwords out of the user
+     ;; object: refuse specs that embed a secret value
+     ((not (eq password-auth-source missing))
+      (unless (and (listp password-auth-source)
+                   (zerop (% (length password-auth-source) 2))
+                   (not (plist-member password-auth-source :secret))
+                   (not (plist-member password-auth-source :password)))
+        (error "pastebin-create-login: :password-auth-source must be a plist spec without :secret/:password, like '(:host \"pastebin.com\" :user \"YOURUSER\")")))
+     ((not (eq password-function missing))
+      (unless (functionp password-function)
+        (error "pastebin-create-login: :password-function must be a function")))
+     (t
+      (unless (stringp password)
+        (error "pastebin-create-login: :password must be a string"))))
+    (setq pastebin--default-user
+          (cond ((not (eq password-auth-source missing))
+                 (pastebin--paste-user :username username
+                                       :dev-key dev-key
+                                       :password-auth-source password-auth-source))
+                ((not (eq password-function missing))
+                 (pastebin--paste-user :username username
+                                       :dev-key dev-key
+                                       :password-function password-function))
+                (t
+                 (pastebin--paste-user :username username
+                                       :dev-key dev-key
+                                       :password password))))
     (message "User %s created, login is on demand. Have a nice day!" username)
-    ) ;; (let* ((lexical-bind t)
+    ) ;; (let* ((missing ...
   ) ;; (defun pastebin-create-login &rest args)
 
 ;; Setup minor mode keymap
