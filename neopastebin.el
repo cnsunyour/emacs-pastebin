@@ -96,11 +96,15 @@
 ;;;     ~~~~~~~~~~~~~~~~~~
 ;;;
 ;;; M-x pastebin-new -> will create a new paste from current buffer
+;;; M-x pastebin-new-from-selection -> from the region
+;;; M-x pastebin-new-guest -> anonymous paste, no login needed
 ;;;
 ;;; The name of the paste is given from current buffer name
 ;;; The format from buffers major mode
-;;; Prefix argument makes the paste unlisted (C-u); without it the
-;;; paste is public
+;;; The expiration date is asked on every paste, RET keeps it forever
+;;; No prefix makes the paste public, C-u makes it unlisted and
+;;; C-u C-u makes it private. Guest pastes support public and
+;;; unlisted only: no prefix is public, any prefix is unlisted
 ;;;
 
 ;;;
@@ -581,16 +585,22 @@ retry needs the fresh key, replaying old parameters would not do"
              (slot-makeunbound user 'usr-key))
            (login user)))))))
 
-(defun pastebin--paste-create (buffer-data &optional unlisted)
+(defun pastebin--paste-create (buffer-data &optional private expire-date guest)
   "Create a paste from BUFFER-DATA and kill its url.
-Shared by `pastebin-new' and `pastebin-new-from-selection'"
+PRIVATE and EXPIRE-DATE go to the submit call. When GUEST is
+non-nil, create an anonymous paste: only the dev key is sent, no
+login and no user key"
   (let ((user (pastebin--default-user-or-error)))
-    (unless (is-logged user)
-      (login user))
+    (unless guest
+      (unless (is-logged user)
+        (login user)))
     (save-excursion
       (goto-char (point-min))
       (pastebin-mode 1)
-      (let* ((pbuf (paste-new user buffer-data unlisted))
+      (let* ((pbuf (if guest
+                       (pastebin--paste-submit (oref user dev-key) nil
+                                               buffer-data private expire-date)
+                     (paste-new user buffer-data private expire-date)))
              (url (pastebin--get-pst-url pbuf))
              (link-point (re-search-forward "https\\?://[A-Za-z0-9_-]+\\.[A-Za-z0-9]+" nil t)))
         (kill-buffer pbuf)
@@ -601,26 +611,90 @@ Shared by `pastebin-new' and `pastebin-new-from-selection'"
                              (format "pastebin may ask you to fill a captcha when you open it"))
                    ""))))))
 
-(cl-defmethod paste-new ((user pastebin--paste-user) buffer-data &optional unlisted)
-  "Upload a new paste to pastebin.com"
-  (let* ((ptitle (buffer-name))
-         (pbuffer (current-buffer))
-         (pprivate (if unlisted "1" "0")))
-    (pastebin--with-user-key
-     user
-     (lambda (usr-key)
-       (let ((params (concat "api_dev_key=" (oref user dev-key)
-                             "&api_user_key=" usr-key
-                             "&api_paste_name=" (url-hexify-string ptitle)
-                             "&api_paste_format=" (url-hexify-string (pastebin--get-format-string-from-major-mode))
-                             "&api_paste_code=" (url-hexify-string (with-current-buffer pbuffer
-                                                                     buffer-data))
-                             "&api_option=paste"
-                             "&api_paste_private=" pprivate)))
-         (with-current-buffer (pastebin--url-retrieve-synchronously pastebin-post-request-paste-url
-                                                                    "POST"
-                                                                    params)
-           (current-buffer)))))))
+(defconst pastebin--expire-date-options
+  '(("N (never)" . "N")
+    ("10M (ten minutes)" . "10M")
+    ("1H (one hour)" . "1H")
+    ("1D (one day)" . "1D")
+    ("1W (one week)" . "1W")
+    ("2W (two weeks)" . "2W")
+    ("1M (one month)" . "1M")
+    ("6M (six months)" . "6M")
+    ("1Y (one year)" . "1Y"))
+  "Friendly labels and official values for paste expiration dates.")
+
+(defun pastebin--read-expire-date ()
+  "Prompt for a paste expiration date and return its official value
+RET picks the default, pastebin's never-expire value"
+  (let ((choice (completing-read "Expire date: "
+                                 pastebin--expire-date-options
+                                 nil t nil nil
+                                 (caar pastebin--expire-date-options))))
+    (cdr (assoc choice pastebin--expire-date-options))))
+
+(defun pastebin--private-from-prefix (prefix)
+  "Map PREFIX to an authenticated pastebin privacy value
+No prefix is public, C-u is unlisted, C-u C-u is private"
+  (cond
+   ((null prefix) "0")
+   ((>= (prefix-numeric-value prefix) 16) "2")
+   (t "1")))
+
+(defun pastebin--normalize-private (private)
+  "Return PRIVATE as one of pastebin's \"0\", \"1\" or \"2\" values
+Nil and the old boolean form of the unlisted argument stay accepted
+for callers of `paste-new' predating the private support. Privacy
+must never be changed silently: anything else errors out"
+  (cond
+   ((member private '("0" "1" "2")) private)
+   ((memq private '(nil 0)) "0")
+   ((eq private t) "1")
+   (t
+    (error "Invalid Pastebin privacy value: %S" private))))
+
+(defun pastebin--normalize-expire-date (expire-date)
+  "Return EXPIRE-DATE, defaulting to pastebin's never-expire value"
+  (let ((value (or expire-date "N")))
+    (unless (member value (mapcar #'cdr pastebin--expire-date-options))
+      (error "Invalid Pastebin expiration date: %S" value))
+    value))
+
+(defun pastebin--paste-submit (dev-key user-key buffer-data private expire-date)
+  "Submit BUFFER-DATA using DEV-KEY and optional USER-KEY
+USER-KEY nil creates a guest paste and omits api_user_key"
+  (let* ((pprivate (pastebin--normalize-private private))
+         (pexpire (pastebin--normalize-expire-date expire-date))
+         (ptitle (buffer-name))
+         (pbuffer (current-buffer)))
+    (when (and (null user-key) (string= pprivate "2"))
+      (error "Guest pastes cannot be private, they need a user key"))
+    (let ((params (concat "api_dev_key=" dev-key
+                          (if user-key
+                              (concat "&api_user_key=" user-key)
+                            "")
+                          "&api_paste_name=" (url-hexify-string ptitle)
+                          "&api_paste_format=" (url-hexify-string (pastebin--get-format-string-from-major-mode))
+                          "&api_paste_code=" (url-hexify-string (with-current-buffer pbuffer
+                                                                  buffer-data))
+                          "&api_option=paste"
+                          "&api_paste_private=" pprivate
+                          "&api_paste_expire_date=" pexpire)))
+      (with-current-buffer (pastebin--url-retrieve-synchronously pastebin-post-request-paste-url
+                                                                 "POST"
+                                                                 params)
+        (current-buffer)))))
+
+(cl-defmethod paste-new ((user pastebin--paste-user) buffer-data
+                         &optional private expire-date)
+  "Upload a new paste to pastebin.com
+PRIVATE is \"0\" for public, \"1\" for unlisted and \"2\" for
+private; nil and the old unlisted boolean stay accepted. EXPIRE-DATE
+is one of pastebin's official values, \"N\" (never) by default"
+  (pastebin--with-user-key
+   user
+   (lambda (usr-key)
+     (pastebin--paste-submit (oref user dev-key) usr-key buffer-data
+                             private expire-date))))
 
 
 
@@ -1021,16 +1095,32 @@ after a logout it needs `pastebin-create-login' again"
       (pastebin-list-buffer-refresh))))
 
 (defun pastebin-new (p)
-  "Create a new paste from buffer"
+  "Create a new paste from buffer
+No prefix makes it public, C-u makes it unlisted and C-u C-u makes
+it private. The command asks for the paste expiration date"
   (interactive "P")
-  (pastebin--paste-create (buffer-string) p)
-  )
+  (pastebin--paste-create (buffer-string)
+                          (pastebin--private-from-prefix p)
+                          (pastebin--read-expire-date)))
 
-(defun pastebin-new-from-selection (start end)
-  "Create a new paste from buffer selection"
-  (interactive "r")
-  (pastebin--paste-create (buffer-substring-no-properties start end))
-  )
+(defun pastebin-new-from-selection (start end &optional p)
+  "Create a new paste from buffer selection
+The prefix and the expiration prompt work as in `pastebin-new'"
+  (interactive (list (region-beginning) (region-end) current-prefix-arg))
+  (pastebin--paste-create (buffer-substring-no-properties start end)
+                          (pastebin--private-from-prefix p)
+                          (pastebin--read-expire-date)))
+
+(defun pastebin-new-guest (p)
+  "Create an anonymous paste from buffer, no login needed
+No prefix makes it public and any prefix makes it unlisted; guest
+pastes cannot be private. The command asks for the paste expiration
+date. Only the configured dev key is sent, no user key"
+  (interactive "P")
+  (pastebin--paste-create (buffer-string)
+                          (if p "1" "0")
+                          (pastebin--read-expire-date)
+                          t))
 
 (defun pastebin-create-login (&rest args)
   "Create a login data. The effective login will be done when needed

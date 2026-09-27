@@ -114,7 +114,11 @@ inside the paste buffer: the pastebin minor mode survives the switch.
 ### Creating a new paste
 
 M-x `pastebin-new` -> will create a new paste from current buffer
+M-x `pastebin-new-from-selection` -> from the region
+M-x `pastebin-new-guest` -> anonymous paste, no login needed
 
 The name of the paste is given from current buffer name
 The format from buffers major mode
-Prefix argument makes the paste unlisted (C-u); without it the paste is public
+The expiration date is asked on every paste, RET keeps it forever
+No prefix makes the paste public, C-u makes it unlisted and C-u C-u
+makes it private. Guest pastes support public and unlisted only
